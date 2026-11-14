@@ -16,6 +16,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -130,6 +133,8 @@ fun CameraScreen() {
     var tab by remember { mutableIntStateOf(0) }
     var toast by remember { mutableStateOf<String?>(null) }
     var camera by remember { mutableStateOf<Camera?>(null) }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var selfieMirror by remember { mutableStateOf(true) }
     var zoom by remember { mutableFloatStateOf(1f) }
     val adjust = remember {
         mutableStateListOf<Float>().apply { repeat(Adjust.values().size) { add(0f) } }
@@ -139,9 +144,10 @@ fun CameraScreen() {
     val params = preset.params.withAdjust(adjust)
 
     // 필터 값이 바뀔 때마다 GL 쪽으로 전달 (길게 누르는 동안은 원본 비교)
-    LaunchedEffect(glView, params, strength, comparing, front) {
+    LaunchedEffect(glView, params, strength, comparing, front, selfieMirror) {
         glView?.setParams(params, if (comparing) 0f else strength)
         glView?.setMirror(front)
+        glView?.setFlip(front && selfieMirror)
     }
 
     // 줌 배율이 바뀌면 카메라에 전달
@@ -197,7 +203,25 @@ fun CameraScreen() {
                     if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 p.unbindAll()
                 zoom = 1f
-                camera = p.bindToLifecycle(activity, cameraSelector, preview)
+                // 사진은 카메라가 낼 수 있는 가장 큰 해상도로 찍는다
+                val captureResolution = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                    .build()
+                val capture = ImageCapture.Builder()
+                    .setResolutionSelector(captureResolution)
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .build()
+                try {
+                    camera = p.bindToLifecycle(activity, cameraSelector, preview, capture)
+                    imageCapture = capture
+                } catch (e: Exception) {
+                    // 고화질 촬영을 못 쓰는 폰이면 예전 방식(화면 저장)으로 대체
+                    Log.w("FilmCam", "고화질 촬영을 쓸 수 없어요", e)
+                    p.unbindAll()
+                    imageCapture = null
+                    camera = p.bindToLifecycle(activity, cameraSelector, preview)
+                }
             } catch (e: Exception) {
                 Log.e("FilmCam", "카메라 연결 실패", e)
             }
@@ -205,7 +229,8 @@ fun CameraScreen() {
         onDispose { provider?.unbindAll() }
     }
 
-    fun shoot() {
+    // 화면에 보이는 그대로 저장 (고화질 촬영이 안 될 때의 대체 방법)
+    fun screenShot() {
         val v = glView ?: return
         v.capture { bmp ->
             Thread {
@@ -213,6 +238,49 @@ fun CameraScreen() {
                 activity.runOnUiThread { toast = if (ok) "저장했어요 ✓" else "저장에 실패했어요" }
             }.start()
         }
+    }
+
+    fun shoot() {
+        val ic = imageCapture
+        if (ic == null) {
+            screenShot()
+            return
+        }
+        val shotParams = params
+        val shotStrength = strength
+        val shotFlip = front && selfieMirror
+        toast = "촬영 중…"
+        ic.takePicture(
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    val rotation = image.imageInfo.rotationDegrees
+                    image.close()
+                    Thread {
+                        val ok = try {
+                            val bmp = PhotoProcessor.process(
+                                bytes, rotation, shotParams, shotStrength, shotFlip,
+                            )
+                            saveBitmap(context, bmp)
+                        } catch (t: Throwable) {
+                            Log.e("FilmCam", "고화질 처리 실패", t)
+                            false
+                        }
+                        activity.runOnUiThread {
+                            if (ok) toast = "저장했어요 ✓" else screenShot()
+                        }
+                    }.start()
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e("FilmCam", "촬영 실패", exception)
+                    screenShot()
+                }
+            },
+        )
     }
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
@@ -359,15 +427,29 @@ fun CameraScreen() {
                 Text(preset.name, color = Color(0xFF9A9A9A), fontSize = 12.sp)
             }
             ShutterButton(onClick = { shoot() })
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            Column(
+                Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
                     "↻ 전환",
                     color = Color.White,
                     fontSize = 14.sp,
                     modifier = Modifier
                         .clickable { front = !front }
-                        .padding(12.dp),
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
+                if (front) {
+                    // 전면일 때만: 셀카를 거울처럼(켜짐) / 실제 모습 그대로(꺼짐)
+                    Text(
+                        if (selfieMirror) "거울 켜짐" else "거울 꺼짐",
+                        color = if (selfieMirror) Color(0xFFF2B77A) else Color(0xFF9A9A9A),
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clickable { selfieMirror = !selfieMirror }
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
             }
         }
     }

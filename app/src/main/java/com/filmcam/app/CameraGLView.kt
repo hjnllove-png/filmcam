@@ -46,8 +46,15 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
         requestRender()
     }
 
+    /** 지금 전면 카메라인지 (센서 방향을 찾는 데 쓰임) */
     fun setMirror(mirror: Boolean) {
         renderer.mirror = mirror
+        requestRender()
+    }
+
+    /** 셀카 거울 모드: true 면 거울처럼 좌우가 바뀐 모습, false 면 실제 모습 */
+    fun setFlip(flip: Boolean) {
+        renderer.flipX = flip
         requestRender()
     }
 
@@ -62,6 +69,7 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
         @Volatile var params = FilterParams()
         @Volatile var intensity = 1f
         @Volatile var mirror = false
+        @Volatile var flipX = false
         @Volatile var rotation = 90
         @Volatile var captureCallback: ((Bitmap) -> Unit)? = null
         @Volatile private var surfaceTexture: SurfaceTexture? = null
@@ -154,6 +162,7 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             GLES20.glUniform3f(u("uHighlightTint"), p.highlightTint.r, p.highlightTint.g, p.highlightTint.b)
             frameCount = (frameCount + 1) % 1000
             GLES20.glUniform1f(u("uTime"), frameCount * 0.013f)
+            GLES20.glUniform1f(u("uPixelScale"), 1f)
 
             val posLoc = GLES20.glGetAttribLocation(program, "aPos")
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -188,7 +197,7 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             request.provideSurface(surface, executor) { surface.release() }
         }
 
-               private val sensorCache = HashMap<Boolean, Int>()
+        private val sensorCache = HashMap<Boolean, Int>()
 
         /** 카메라 센서가 세로 화면 기준으로 돌아가 붙은 각도 (보통 후면 90, 전면 270) */
         private fun sensorOrientation(): Int = sensorCache.getOrPut(mirror) {
@@ -214,17 +223,24 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             }
         }
 
-        /** 센서 방향에서 세로 화면으로 맞추려고 더 돌려야 하는 각도 */
+        /** SurfaceTexture 행렬에 이미 좌우 거울(전면 카메라 기본 동작)이 들어 있는지 */
+        private fun hasSurfaceMirror(): Boolean =
+            stMatrix[0] * stMatrix[5] - stMatrix[4] * stMatrix[1] > 0f
+
+        /** 센서 방향에서 세로 화면으로 맞추려고 더 돌려야 하는 각도 (SurfaceTexture 행렬이 이미 돌린 만큼은 뺀다) */
         private fun extraRotation(): Int {
+            val m = hasSurfaceMirror()
             val applied = if (Math.abs(stMatrix[0]) < 0.5f) {
-                if (stMatrix[1] < 0f) 90 else 270
+                if ((stMatrix[1] < 0f) != m) 90 else 270
             } else {
-                if (stMatrix[0] < 0f) 180 else 0
+                if ((stMatrix[0] < 0f) != m) 180 else 0
             }
-                        return ((sensorOrientation() - applied + (if (mirror) 180 else 0)) % 360 + 360) % 360
-        } /** 센서 방향 → 화면 방향 회전(+ 셀카 좌우반전)을 SurfaceTexture 행렬과 합친다 */
+            return ((sensorOrientation() - applied) % 360 + 360) % 360
+        }
+
+        /** 센서 방향 → 화면 방향 회전(+ 셀카 좌우반전)을 SurfaceTexture 행렬과 합친다 */
         private fun buildTexMatrix(): FloatArray {
-                        val r = when (extraRotation()) {
+            val r = when (extraRotation()) {
                 90 -> floatArrayOf(0f, -1f, 1f, 1f, 0f, 0f)
                 180 -> floatArrayOf(-1f, 0f, 1f, 0f, -1f, 1f)
                 270 -> floatArrayOf(0f, 1f, 0f, -1f, 0f, 1f)
@@ -236,7 +252,8 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             var d = r[3]
             val e = r[4]
             var f = r[5]
-            if (mirror) {
+            // 원하는 거울 상태와 SurfaceTexture 가 이미 가진 거울 상태가 다를 때만 한 번 뒤집는다
+            if (flipX != hasSurfaceMirror()) {
                 c += a
                 a = -a
                 f += d

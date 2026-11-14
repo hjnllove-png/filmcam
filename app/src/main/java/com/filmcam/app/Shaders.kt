@@ -36,6 +36,7 @@ uniform float uMono;
 uniform float uSplit;
 uniform float uIntensity;
 uniform float uTime;
+uniform float uPixelScale;
 uniform vec3 uShadowTint;
 uniform vec3 uHighlightTint;
 
@@ -104,11 +105,16 @@ void main() {
     c *= 1.0 - uVignette * uIntensity * vig * 0.75;
 
     // 필름 그레인 (중간톤에서 더 강하게)
-    float n = hash(gl_FragCoord.xy + vec2(uTime * 37.0, uTime * 17.0)) - 0.5;
+    float n = hash(floor(gl_FragCoord.xy / max(uPixelScale, 1.0)) + vec2(uTime * 37.0, uTime * 17.0)) - 0.5;
     float lg = luma(c);
     c += n * uGrain * uIntensity * 0.22 * (1.0 - abs(lg * 2.0 - 1.0) * 0.6);
 
     gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 """
+
+    /** 촬영한 사진(일반 텍스처)에 같은 필터를 적용할 때 쓰는 버전 */
+    val FRAGMENT_2D: String = FRAGMENT
+        .replace("#extension GL_OES_EGL_image_external : require", "")
+        .replace("samplerExternalOES", "sampler2D")
 }
