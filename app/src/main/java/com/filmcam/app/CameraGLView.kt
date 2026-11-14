@@ -188,9 +188,43 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             request.provideSurface(surface, executor) { surface.release() }
         }
 
-        /** 센서 방향 → 화면 방향 회전(+ 셀카 좌우반전)을 SurfaceTexture 행렬과 합친다 */
+               private val sensorCache = HashMap<Boolean, Int>()
+
+        /** 카메라 센서가 세로 화면 기준으로 돌아가 붙은 각도 (보통 후면 90, 전면 270) */
+        private fun sensorOrientation(): Int = sensorCache.getOrPut(mirror) {
+            try {
+                val mgr = context.getSystemService(Context.CAMERA_SERVICE)
+                    as android.hardware.camera2.CameraManager
+                val facing = android.hardware.camera2.CameraCharacteristics.LENS_FACING
+                val want = if (mirror) {
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT
+                } else {
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+                }
+                mgr.cameraIdList.firstNotNullOfOrNull { id ->
+                    val ch = mgr.getCameraCharacteristics(id)
+                    if (ch.get(facing) == want) {
+                        ch.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION)
+                    } else {
+                        null
+                    }
+                } ?: 90
+            } catch (e: Exception) {
+                90
+            }
+        }
+
+        /** 센서 방향에서 세로 화면으로 맞추려고 더 돌려야 하는 각도 */
+        private fun extraRotation(): Int {
+            val applied = if (Math.abs(stMatrix[0]) < 0.5f) {
+                if (stMatrix[1] < 0f) 90 else 270
+            } else {
+                if (stMatrix[0] < 0f) 180 else 0
+            }
+            return ((sensorOrientation() - applied) % 360 + 360) % 360
+        } /** 센서 방향 → 화면 방향 회전(+ 셀카 좌우반전)을 SurfaceTexture 행렬과 합친다 */
         private fun buildTexMatrix(): FloatArray {
-            val r = when (((rotation % 360) + 360) % 360) {
+                        val r = when (extraRotation()) {
                 90 -> floatArrayOf(0f, -1f, 1f, 1f, 0f, 0f)
                 180 -> floatArrayOf(-1f, 0f, 1f, 0f, -1f, 1f)
                 270 -> floatArrayOf(0f, 1f, 0f, -1f, 0f, 1f)
