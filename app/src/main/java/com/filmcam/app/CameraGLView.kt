@@ -221,7 +221,7 @@ class CameraGLView(context: Context) : GLSurfaceView(context) {
             } else {
                 if (stMatrix[0] < 0f) 180 else 0
             }
-            return ((sensorOrientation() - applied) % 360 + 360) % 360
+                        return ((sensorOrientation() - applied + (if (mirror) 180 else 0)) % 360 + 360) % 360
         } /** 센서 방향 → 화면 방향 회전(+ 셀카 좌우반전)을 SurfaceTexture 행렬과 합친다 */
         private fun buildTexMatrix(): FloatArray {
                         val r = when (extraRotation()) {
