@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
@@ -23,6 +24,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +65,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -126,6 +129,8 @@ fun CameraScreen() {
     var comparing by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
     var toast by remember { mutableStateOf<String?>(null) }
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    var zoom by remember { mutableFloatStateOf(1f) }
     val adjust = remember {
         mutableStateListOf<Float>().apply { repeat(Adjust.values().size) { add(0f) } }
     }
@@ -137,6 +142,11 @@ fun CameraScreen() {
     LaunchedEffect(glView, params, strength, comparing, front) {
         glView?.setParams(params, if (comparing) 0f else strength)
         glView?.setMirror(front)
+    }
+
+    // 줌 배율이 바뀌면 카메라에 전달
+    LaunchedEffect(camera, zoom) {
+        camera?.cameraControl?.setZoomRatio(zoom)
     }
 
     LaunchedEffect(toast) {
@@ -186,7 +196,8 @@ fun CameraScreen() {
                 val cameraSelector =
                     if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 p.unbindAll()
-                p.bindToLifecycle(activity, cameraSelector, preview)
+                zoom = 1f
+                camera = p.bindToLifecycle(activity, cameraSelector, preview)
             } catch (e: Exception) {
                 Log.e("FilmCam", "카메라 연결 실패", e)
             }
@@ -225,15 +236,40 @@ fun CameraScreen() {
                 Modifier
                     .matchParentSize()
                     .pointerInput(Unit) {
+                        // 두 손가락 핀치로 줌인/줌아웃
+                        detectTransformGestures { _, _, pinch, _ ->
+                            val st = camera?.cameraInfo?.zoomState?.value
+                            val lo = st?.minZoomRatio ?: 1f
+                            val hi = st?.maxZoomRatio ?: 1f
+                            zoom = (zoom * pinch).coerceIn(lo, hi)
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        // 0.3초 넘게 누르고 있으면 원본 비교 (짧게 누르거나 핀치 중에는 해당 없음)
                         detectTapGestures(
                             onPress = {
-                                comparing = true
-                                tryAwaitRelease()
-                                comparing = false
+                                val released = withTimeoutOrNull(300) { tryAwaitRelease() }
+                                if (released == null) {
+                                    comparing = true
+                                    tryAwaitRelease()
+                                    comparing = false
+                                }
                             },
                         )
                     },
             )
+            if (zoom > 1.05f) {
+                Text(
+                    String.format(Locale.US, "%.1f×", zoom),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = 12.dp)
+                        .background(Color(0x88000000), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
             if (comparing) {
                 Text(
                     "원본",
@@ -297,8 +333,30 @@ fun CameraScreen() {
                 .height(88.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Text(preset.name, color = Color(0xFF9A9A9A), fontSize = 13.sp)
+            Column(
+                Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // 배율 글자를 누르면 1× → 2× → 3× → 1× 로 바뀜
+                Text(
+                    String.format(Locale.US, "%.1f×", zoom),
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .clickable {
+                            val st = camera?.cameraInfo?.zoomState?.value
+                            val lo = st?.minZoomRatio ?: 1f
+                            val hi = st?.maxZoomRatio ?: 1f
+                            val next = when {
+                                zoom < 1.5f -> 2f
+                                zoom < 2.5f -> 3f
+                                else -> 1f
+                            }
+                            zoom = next.coerceIn(lo, hi)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                Text(preset.name, color = Color(0xFF9A9A9A), fontSize = 12.sp)
             }
             ShutterButton(onClick = { shoot() })
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
